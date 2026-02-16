@@ -1,0 +1,34 @@
+{
+    "telegram": {
+        "bot_token": "YOUR_BOT_TOKEN_HERE",
+        "chat_id": "YOUR_CHAT_ID_HERE",
+        "enabled": true
+    },
+    "strategy": {
+        "hold_days": 5,
+        "stop_loss_pct": -7.0,
+        "top_n": 3,
+        "max_positions": 3,
+        "min_prob": 0.50,
+        "max_prob": 0.85,
+        "cost_bps": 15,
+        "skip_wednesday": false,
+        "big_move_threshold": 5.0,
+        "training_lookback_days": 504,
+        "retrain_every_days": 63,
+        "momentum_filter": true
+    },
+    "schedule": {
+        "scan_time_utc": "21:30",
+        "timezone": "US/Eastern",
+        "scan_days": "mon-fri"
+    },
+    "paper_trading": {
+        "start_capital": 100000,
+        "track_results": true
+    },
+    "lepotato": {
+        "ip": "YOUR_LEPOTATO_IP",
+        "project_dir": "/root/stock-scanner"
+    }
+}
