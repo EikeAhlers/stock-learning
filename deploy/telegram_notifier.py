@@ -68,49 +68,67 @@ def send_telegram(message: str, parse_mode: str = "HTML") -> bool:
         return False
 
 
-def format_daily_picks(picks: list, scan_date: str, model_info: dict = None) -> str:
-    """Format daily stock picks into a Telegram message."""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+def format_daily_picks(picks: list, scan_date: str, model_info: dict = None,
+                       portfolio: dict = None, hold_days: int = 5) -> str:
+    """Format daily picks into a quick, clear Telegram message.
+    
+    User wants: what to buy, when to sell, what we hold, overall performance.
+    Nothing extra.
+    """
+    from datetime import datetime, timedelta
 
-    msg = f"🔔 <b>STOCK SCANNER — {scan_date}</b>\n"
-    msg += f"📅 Scanned: {now}\n\n"
+    # Calculate buy and sell dates (skip weekends)
+    buy_date = datetime.strptime(scan_date, "%Y-%m-%d") + timedelta(days=1)
+    while buy_date.weekday() >= 5:
+        buy_date += timedelta(days=1)
+    
+    sell_date = buy_date
+    trading_days = 0
+    while trading_days < hold_days:
+        sell_date += timedelta(days=1)
+        if sell_date.weekday() < 5:
+            trading_days += 1
 
-    if model_info:
-        msg += f"📊 Model: AUC {model_info.get('auc', 'N/A'):.3f}, "
-        msg += f"trained on {model_info.get('train_rows', 'N/A'):,} rows\n\n"
+    msg = f"📊 <b>SCAN {scan_date}</b>\n\n"
 
+    # ── BUY ──
     if not picks:
-        msg += "⚠️ <b>No tradeable picks today.</b>\n"
-        msg += "Filters: momentum > 0, prob 50-85%\n"
-        return msg
+        msg += "No picks today — nothing passed filters.\n"
+    else:
+        msg += f"<b>BUY</b> {buy_date.strftime('%a %b %d')} at open:\n"
+        for p in picks:
+            prob = p.get("prob", 0)
+            msg += f"  → <b>{p['ticker']}</b>  ${p['close']:.2f}  ({prob:.0%})\n"
+        msg += f"\n<b>SELL</b> {sell_date.strftime('%a %b %d')} at close\n"
 
-    msg += f"🎯 <b>TOP {len(picks)} PICKS</b> (buy tomorrow at open, hold {model_info.get('hold_days', 5)}d)\n\n"
+    # ── HOLDING ──
+    if portfolio and portfolio.get("positions"):
+        positions = portfolio["positions"]
+        msg += f"\n<b>HOLDING ({len(positions)})</b>\n"
+        for pos in positions:
+            pnl = pos.get("unrealized_pnl", 0)
+            days = pos.get("days_held", 0)
+            left = max(0, hold_days - days)
+            icon = "🟢" if pnl >= 0 else "🔴"
+            msg += f"  {icon} {pos['ticker']}  {pnl:+.1f}%  ({left}d left)\n"
 
-    for i, p in enumerate(picks):
-        rank = i + 1
-        prob = p.get("prob", 0)
-        ticker = p.get("ticker", "???")
-        price = p.get("close", 0)
-        mom = p.get("momentum_20d", 0)
-        sector = p.get("sector", "")
+    # ── PERFORMANCE ──
+    if portfolio:
+        cash = portfolio.get("cash", 0)
+        pos_val = sum(p.get("current_value", 0) for p in portfolio.get("positions", []))
+        total = cash + pos_val
+        start = portfolio.get("start_capital", 100000)
+        ret = (total / start - 1) * 100
+        msg += f"\n💰 <b>${total:,.0f}</b>  ({ret:+.1f}%)\n"
 
-        # Confidence emoji
-        if prob >= 0.75:
-            conf = "🔥"
-        elif prob >= 0.65:
-            conf = "✅"
-        else:
-            conf = "📊"
+    # Closed trade stats
+    trades = portfolio.get("trades", []) if portfolio else []
+    if trades:
+        wins = sum(1 for t in trades if t.get("pnl_pct", 0) > 0)
+        wr = wins / len(trades) * 100 if trades else 0
+        avg_pnl = sum(t.get("pnl_pct", 0) for t in trades) / len(trades) if trades else 0
+        msg += f"📈 {len(trades)} trades | WR {wr:.0f}% | Avg {avg_pnl:+.1f}%"
 
-        msg += f"{conf} <b>#{rank} {ticker}</b>  —  {prob:.0%} prob\n"
-        msg += f"   💰 ${price:.2f}  |  Mom: {mom:+.1f}%"
-        if sector:
-            msg += f"  |  {sector}"
-        msg += "\n\n"
-
-    msg += "─────────────────\n"
-    msg += "⚠️ Paper trading only. Not financial advice.\n"
-    msg += f"🤖 Walk-forward XGBoost | P-cap 85% | SL -7%"
     return msg
 
 
@@ -139,9 +157,16 @@ def format_portfolio_update(portfolio: dict) -> str:
 if __name__ == "__main__":
     # Test
     test_picks = [
-        {"ticker": "NVDA", "prob": 0.78, "close": 134.50, "momentum_20d": 12.3, "sector": "Technology"},
-        {"ticker": "NRG", "prob": 0.71, "close": 98.20, "momentum_20d": 8.5, "sector": "Utilities"},
+        {"ticker": "NVDA", "prob": 0.78, "close": 134.50, "momentum_20d": 12.3, "pred_return": 6.2, "ev": 4.8, "sector": "Technology"},
     ]
-    msg = format_daily_picks(test_picks, "2026-02-15", {"auc": 0.869, "train_rows": 126000, "hold_days": 5})
+    test_portfolio = {
+        "cash": 50000, "start_capital": 100000,
+        "positions": [
+            {"ticker": "FIX", "unrealized_pnl": 5.2, "days_held": 3, "current_value": 35000},
+            {"ticker": "MPWR", "unrealized_pnl": -1.1, "days_held": 1, "current_value": 33000},
+        ],
+    }
+    msg = format_daily_picks(test_picks, "2026-02-27", {"auc": 0.939, "hold_days": 5},
+                             portfolio=test_portfolio, hold_days=5)
     print(msg)
     send_telegram(msg)

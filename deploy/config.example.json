@@ -15,8 +15,7 @@
         "skip_wednesday": false,
         "big_move_threshold": 5.0,
         "training_lookback_days": 504,
-        "retrain_every_days": 63,
-        "momentum_filter": true
+        "retrain_every_days": 63
     },
     "schedule": {
         "scan_time_utc": "21:30",
@@ -26,6 +25,12 @@
     "paper_trading": {
         "start_capital": 100000,
         "track_results": true
+    },
+    "alpaca": {
+        "enabled": false,
+        "api_key": "YOUR_ALPACA_API_KEY",
+        "api_secret": "YOUR_ALPACA_API_SECRET",
+        "base_url": "https://paper-api.alpaca.markets"
     },
     "lepotato": {
         "ip": "YOUR_LEPOTATO_IP",

@@ -54,6 +54,7 @@ from paper_trader import (
     open_trade, close_trade, update_positions,
     get_performance_summary, format_performance_message,
 )
+from alpaca_trader import AlpacaTrader
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -339,63 +340,89 @@ def _consecutive(mask):
 #  MODEL MANAGEMENT
 # ═══════════════════════════════════════════════════════════════════════════
 
-def train_model(df, features, big_move_threshold=5.0):
-    """Train XGBoost on the full dataset."""
+def train_model(df, features, big_move_threshold=5.0, hold_days=5):
+    """Train XGBoost classifier + magnitude regressor for EV-ranking."""
     try:
-        from xgboost import XGBClassifier
+        from xgboost import XGBClassifier, XGBRegressor
     except ImportError:
         from sklearn.ensemble import GradientBoostingClassifier as XGBClassifier
+        XGBRegressor = None
     from sklearn.preprocessing import StandardScaler
     
     df = df.copy()
     df["Is_Big_Mover"] = (df["Daily_Return_Pct"] >= big_move_threshold).astype(int)
-    model_df = df[features + ["Is_Big_Mover"]].dropna()
+    
+    # Forward N-day return for magnitude prediction (what we actually care about)
+    df["Fwd_Return"] = df.groupby("Ticker")["Daily_Return_Pct"].transform(
+        lambda x: x.shift(-1).rolling(hold_days, min_periods=1).sum()
+    )
+    
+    # Fill NaN features with 0 (long-lookback features like SMA_200 have many NaNs)
+    for f in features:
+        if f in df.columns:
+            df[f] = df[f].fillna(0)
+    model_df = df[features + ["Is_Big_Mover", "Fwd_Return"]].dropna(subset=["Is_Big_Mover", "Fwd_Return"])
     
     if len(model_df) < 500:
         log(f"Not enough data for training ({len(model_df)} rows)")
         return None
     
     X = model_df[features]
-    y = model_df["Is_Big_Mover"]
+    y_cls = model_df["Is_Big_Mover"]
+    y_reg = model_df["Fwd_Return"]
     
-    pos_count = y.sum()
-    neg_count = len(y) - pos_count
+    pos_count = y_cls.sum()
+    neg_count = len(y_cls) - pos_count
     scale_pos = neg_count / max(pos_count, 1)
     
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
     
+    # --- Classifier (probability of big move) ---
     clf = XGBClassifier(
         n_estimators=150, max_depth=5, learning_rate=0.05,
         min_child_weight=20, subsample=0.8, colsample_bytree=0.8,
         scale_pos_weight=scale_pos, random_state=42,
-        verbosity=0, tree_method="hist",  # hist uses less memory on ARM
-        device="cpu",
+        verbosity=0, tree_method="hist", device="cpu",
     )
     
     try:
-        clf.fit(X_scaled, y)
+        clf.fit(X_scaled, y_cls)
     except Exception as e:
         log(f"XGBoost fit error: {e}, trying fallback params...")
-        # Fallback with even lighter settings
         clf = XGBClassifier(
             n_estimators=100, max_depth=4, learning_rate=0.05,
             min_child_weight=20, subsample=0.8, colsample_bytree=0.8,
             scale_pos_weight=scale_pos, random_state=42,
             verbosity=0, tree_method="hist", device="cpu",
         )
-        clf.fit(X_scaled, y)
+        clf.fit(X_scaled, y_cls)
+    
+    # --- Magnitude regressor (expected forward return) ---
+    reg = None
+    if XGBRegressor is not None:
+        try:
+            reg = XGBRegressor(
+                n_estimators=150, max_depth=5, learning_rate=0.05,
+                min_child_weight=20, subsample=0.8, colsample_bytree=0.8,
+                random_state=42, verbosity=0, tree_method="hist", device="cpu",
+            )
+            reg.fit(X_scaled, y_reg)
+            log(f"Magnitude regressor trained (median fwd return: {y_reg.median():+.2f}%)")
+        except Exception as e:
+            log(f"Regressor failed ({e}), will use prob-only ranking")
+            reg = None
     
     # AUC estimate (last 20% as validation)
     n_val = int(len(X_scaled) * 0.2)
     val_pred = clf.predict_proba(X_scaled[-n_val:])[:, 1]
     from sklearn.metrics import roc_auc_score
-    auc = roc_auc_score(y.iloc[-n_val:], val_pred)
+    auc = roc_auc_score(y_cls.iloc[-n_val:], val_pred)
     
     log(f"Model trained: {len(model_df):,} rows, AUC={auc:.3f}, pos_rate={pos_count/len(model_df)*100:.1f}%")
     
     return {
-        "model": clf, "scaler": scaler, "features": features,
+        "model": clf, "regressor": reg, "scaler": scaler, "features": features,
         "auc": auc, "train_rows": len(model_df),
         "trained_date": datetime.now().isoformat(),
     }
@@ -483,7 +510,11 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
         # Train on all data up to yesterday (exclude today)
         yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
         train_data = df[df.index < yesterday]
-        model_dict = train_model(train_data, features, strat.get("big_move_threshold", 5.0))
+        model_dict = train_model(
+            train_data, features,
+            big_move_threshold=strat.get("big_move_threshold", 5.0),
+            hold_days=strat.get("hold_days", 5),
+        )
         
         if model_dict is None:
             log("ERROR: Model training failed!")
@@ -541,11 +572,26 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
     X = scl.transform(scoreable[available].values)
     probs = mdl.predict_proba(X)[:, 1]
     
+    # Magnitude prediction (expected forward return)
+    reg = model_dict.get("regressor", None)
+    if reg is not None:
+        try:
+            pred_returns = reg.predict(X)
+        except Exception as e:
+            log(f"Regressor predict failed ({e}), using prob-only")
+            pred_returns = probs * 5.0  # fallback: assume 5% if big move
+    else:
+        pred_returns = probs * 5.0  # fallback
+    
     scored = pd.DataFrame({
         "Ticker": scoreable["Ticker"].values,
         "Prob": probs,
+        "Pred_Return": pred_returns,
         "Close": scoreable["Close"].values,
     })
+    
+    # Expected Value = Probability × Predicted Return
+    scored["EV"] = scored["Prob"] * scored["Pred_Return"]
     
     # Add momentum
     if "Prev_Return_20d" in scoreable.columns:
@@ -553,28 +599,37 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
     else:
         scored["Mom_20d"] = 0
     
-    log(f"Scored {len(scored)} stocks. Prob range: {probs.min():.3f} – {probs.max():.3f}")
+    # Add volatility for context
+    if "Prev_Volatility_20d" in scoreable.columns:
+        scored["Volatility"] = scoreable["Prev_Volatility_20d"].values
+    else:
+        scored["Volatility"] = 0
     
-    # ── Step 5: Apply filters ─────────────────────────────────────────
-    log("Step 5: Applying filters...")
+    log(f"Scored {len(scored)} stocks. Prob: {probs.min():.3f}–{probs.max():.3f}, EV: {scored['EV'].min():.2f}–{scored['EV'].max():.2f}")
+    
+    # ── Step 5: Apply quality filters ─────────────────────────────────
+    log("Step 5: Applying quality filters...")
     min_prob = strat.get("min_prob", 0.50)
     max_prob = strat.get("max_prob", 0.85)
     top_n = strat.get("top_n", 3)
     
+    # Backtest-proven best strategy: prob-only ranking, 3 picks
+    # EV-ranking looked good in theory but underperforms by ~30% in backtest
     filtered = scored[
         (scored["Prob"] >= min_prob) &
         (scored["Prob"] <= max_prob) &
-        (scored["Mom_20d"] > 0)
-    ].sort_values("Prob", ascending=False)
+        (scored["Mom_20d"] > 0)  # Only filter: positive 20d momentum
+    ].sort_values("Prob", ascending=False)  # Rank by probability (backtest-proven best)
     
     # Skip Wednesday if configured
     if strat.get("skip_wednesday", False) and dow == 2:
         log("Wednesday — skipping signals per config")
         filtered = filtered.head(0)
     
+    # Take top N picks by probability
     picks = filtered.head(top_n)
     
-    log(f"After filters: {len(filtered)} stocks pass, top {len(picks)} selected")
+    log(f"After filters: {len(filtered)} stocks pass, {len(picks)} selected (prob≥{min_prob}, mom>0%)")
     
     # ── Step 6: Format picks ──────────────────────────────────────────
     picks_list = []
@@ -584,6 +639,8 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
             "prob": float(row["Prob"]),
             "close": float(row["Close"]),
             "momentum_20d": float(row["Mom_20d"]),
+            "pred_return": float(row["Pred_Return"]),
+            "ev": float(row["EV"]),
             "sector": "",
         })
     
@@ -643,7 +700,7 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
         "pass_momentum": int((scored["Mom_20d"] > 0).sum()),
         "pass_all_filters": len(filtered),
         "picks_selected": len(picks_list),
-        "filters_used": {"min_prob": min_prob, "max_prob": max_prob, "momentum": True},
+        "filters_used": {"min_prob": min_prob, "max_prob": max_prob, "ranking": "probability"},
     }
     
     # Full top 20 for analysis (did we miss good ones?)
@@ -772,13 +829,41 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
     elapsed = time.time() - start
     log(f"Scan complete in {elapsed:.0f}s")
     
-    msg = format_daily_picks(picks_list, today_str, model_info)
+    # Reload portfolio for accurate state
+    portfolio = load_portfolio()
+    hold_days = strat.get("hold_days", 5)
     
-    # Add portfolio summary
-    perf = get_performance_summary()
-    if perf["total_trades"] > 0:
-        msg += f"\n\n📊 Paper P&L: ${perf['total_pnl_dollars']:+,.0f} ({perf['portfolio_return']:+.1f}%)"
-        msg += f" | WR: {perf['win_rate']:.0f}% over {perf['total_trades']} trades"
+    msg = format_daily_picks(
+        picks_list, today_str, model_info,
+        portfolio=portfolio, hold_days=hold_days,
+    )
+    
+    # ── Step 10: Alpaca paper trading ─────────────────────────────────
+    log("Step 10: Alpaca paper trading...")
+    try:
+        alpaca = AlpacaTrader()
+        if alpaca.enabled:
+            # Sell expired positions first
+            sold = alpaca.sell_expired()
+            if sold:
+                for s in sold:
+                    log(f"  Alpaca sold {s['ticker']}: {s['reason']} ({s['pnl']:+.1f}%)")
+            
+            # Buy new picks
+            if picks_list:
+                result = alpaca.execute_picks(picks_list, max_pos)
+                alpaca.record_buys(picks_list)
+                for b in result["bought"]:
+                    log(f"  Alpaca bought {b['ticker']}: {b['qty']} shares @ ${b['price']:.2f}")
+            
+            # Add Alpaca summary to message
+            alpaca_summary = alpaca.get_summary()
+            if alpaca_summary:
+                msg += "\n" + alpaca_summary
+        else:
+            log("  Alpaca trading disabled in config")
+    except Exception as e:
+        log(f"  Alpaca error (non-fatal): {e}")
     
     if manual:
         print("\n" + msg.replace("<b>", "").replace("</b>", ""))
@@ -786,9 +871,9 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
         send_telegram(msg)
     
     # ── Step 10: Also show full top 20 in logs ────────────────────────
-    log("\nFull Top 20:")
+    log("\nFull Top 20 (by Probability):")
     for i, (_, row) in enumerate(filtered.head(20).iterrows()):
-        log(f"  #{i+1:2d}  {row['Ticker']:<6s}  P={row['Prob']:.2f}  Close=${row['Close']:.2f}  Mom={row['Mom_20d']:+.1f}%")
+        log(f"  #{i+1:2d}  {row['Ticker']:<6s}  P={row['Prob']:.2f}  EV={row['EV']:.2f}  PredRet={row['Pred_Return']:+.1f}%  Mom={row['Mom_20d']:+.1f}%")
     
     log("\n" + "=" * 70)
     log("SCAN COMPLETE")
