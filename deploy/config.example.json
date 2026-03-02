@@ -9,7 +9,6 @@
         "stop_loss_pct": -7.0,
         "top_n": 2,
         "max_positions": 2,
-        "max_portfolio_pct": 0.50,
         "min_prob": 0.50,
         "max_prob": 0.85,
         "cost_bps": 10,
