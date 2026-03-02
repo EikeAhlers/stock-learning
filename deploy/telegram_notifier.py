@@ -77,11 +77,13 @@ def format_daily_picks(picks: list, scan_date: str, model_info: dict = None,
     """
     from datetime import datetime, timedelta
 
-    # Calculate buy and sell dates (skip weekends)
-    buy_date = datetime.strptime(scan_date, "%Y-%m-%d") + timedelta(days=1)
+    # Buy today at close (scan runs 30 min before close, orders fill before 4pm)
+    buy_date = datetime.strptime(scan_date, "%Y-%m-%d")
+    # If scan_date is weekend (manual run), shift to Monday
     while buy_date.weekday() >= 5:
         buy_date += timedelta(days=1)
     
+    # Sell date = hold_days trading days later
     sell_date = buy_date
     trading_days = 0
     while trading_days < hold_days:
@@ -95,7 +97,7 @@ def format_daily_picks(picks: list, scan_date: str, model_info: dict = None,
     if not picks:
         msg += "No picks today — nothing passed filters.\n"
     else:
-        msg += f"<b>BUY</b> {buy_date.strftime('%a %b %d')} at open:\n"
+        msg += f"<b>BUY NOW</b> (before close):\n"
         for p in picks:
             prob = p.get("prob", 0)
             msg += f"  → <b>{p['ticker']}</b>  ${p['close']:.2f}  ({prob:.0%})\n"
