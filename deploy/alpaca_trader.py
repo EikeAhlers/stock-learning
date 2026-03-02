@@ -234,8 +234,12 @@ class AlpacaTrader:
             log("No new buys needed")
             return results
 
-        # Position sizing: equal weight across slots
-        pos_size = equity / max_positions
+        # Position sizing: deploy only max_portfolio_pct of equity (default 50%)
+        cfg = load_config()
+        max_pct = cfg["strategy"].get("max_portfolio_pct", 0.50)
+        deploy_amount = equity * max_pct
+        pos_size = deploy_amount / max_positions
+        log(f"Position sizing: {max_pct:.0%} of ${equity:,.0f} = ${deploy_amount:,.0f}, ${pos_size:,.0f}/pick")
 
         for pick in buys:
             tk = pick["ticker"]

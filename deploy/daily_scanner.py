@@ -802,12 +802,13 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
             if tk in [p["ticker"] for p in portfolio["positions"]]:
                 continue
             
-            # Position sizing
+            # Position sizing — deploy only max_portfolio_pct of equity
             total_val = portfolio["cash"] + sum(
                 p.get("current_value", p["shares"] * p["entry_price"])
                 for p in portfolio["positions"]
             )
-            pos_val = min(portfolio["cash"], total_val / max_pos)
+            max_pct = strat.get("max_portfolio_pct", 0.50)
+            pos_val = min(portfolio["cash"], (total_val * max_pct) / max_pos)
             shares = int(pos_val / (pick["close"] * 1.0015))
             
             if shares > 0 and portfolio["cash"] > shares * pick["close"] * 1.0015:
