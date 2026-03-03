@@ -853,17 +853,32 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
     
     # ── Step 10: Alpaca paper trading ─────────────────────────────────
     log("Step 10: Alpaca paper trading...")
+    
+    # Check if intelligence service flagged today as a skip day
+    skip_file = os.path.join(DATA_DIR, "skip_buy_today.json")
+    skip_buying = False
+    if os.path.exists(skip_file):
+        try:
+            with open(skip_file) as f:
+                skip_data = json.load(f)
+            if skip_data.get("date") == today_str:
+                reasons = skip_data.get("reasons", [])
+                log(f"  SKIP BUYING TODAY: {', '.join(reasons)}")
+                skip_buying = True
+        except Exception:
+            pass
+
     try:
         alpaca = AlpacaTrader()
         if alpaca.enabled:
-            # Sell expired positions first
+            # Sell expired positions first (always do this)
             sold = alpaca.sell_expired()
             if sold:
                 for s in sold:
                     log(f"  Alpaca sold {s['ticker']}: {s['reason']} ({s['pnl']:+.1f}%)")
             
-            # Buy new picks
-            if picks_list:
+            # Buy new picks (skip on crash days)
+            if picks_list and not skip_buying:
                 result = alpaca.execute_picks(picks_list, max_pos)
                 alpaca.record_buys(picks_list)
                 for b in result["bought"]:
