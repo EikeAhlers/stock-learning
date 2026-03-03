@@ -234,10 +234,10 @@ class AlpacaTrader:
             log("No new buys needed")
             return results
 
-        # Position sizing: tiered (60/40) or equal weight
+        # Position sizing: tiered (70/30) or equal weight
         cfg = load_config()
         sizing = cfg["strategy"].get("sizing_method", "equal")
-        tiers = [0.60, 0.40] if sizing == "tiered" else [0.50, 0.50]
+        tiers = [0.70, 0.30] if sizing == "tiered" else [0.50, 0.50]
         slot_size = equity / max_positions
         n_buy = len(buys)
         tier_weights = tiers[:n_buy]
@@ -247,7 +247,7 @@ class AlpacaTrader:
         for i, pick in enumerate(buys):
             tk = pick["ticker"]
             price = pick["close"]
-            tier = tiers[i] if i < len(tiers) else 0.40
+            tier = tiers[i] if i < len(tiers) else 0.30
             pos_size = slot_size * tier * scale
             qty = int(pos_size / (price * 1.001))  # slight buffer for slippage
 

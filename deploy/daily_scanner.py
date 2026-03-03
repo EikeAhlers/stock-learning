@@ -804,8 +804,8 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
         )
         slot_size = total_val / max_pos
         
-        # Tiered: #1 pick gets 60%, #2 gets 40% of their slots
-        tiers = [0.60, 0.40] if sizing_method == "tiered" else [0.50, 0.50]
+        # Tiered: #1 pick gets 70%, #2 gets 30% of their slots
+        tiers = [0.70, 0.30] if sizing_method == "tiered" else [0.50, 0.50]
         eligible = []
         for pick in picks_list[:open_slots]:
             tk = pick["ticker"]
@@ -819,7 +819,7 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
         
         for i, pick in enumerate(eligible):
             tk = pick["ticker"]
-            tier = tiers[i] if i < len(tiers) else 0.40
+            tier = tiers[i] if i < len(tiers) else 0.30
             pos_val = min(portfolio["cash"], slot_size * tier * scale)
             shares = int(pos_val / (pick["close"] * 1.0015))
             

@@ -1,0 +1,33 @@
+{
+  "model": {
+    "big_move": 5.0,
+    "n_est": 150,
+    "depth": 5,
+    "lr": 0.05,
+    "mcw": 20,
+    "lookback": 504,
+    "retrain": 63
+  },
+  "filters": {
+    "min_prob": 0.60,
+    "max_prob": 0.85,
+    "min_mom": 0
+  },
+  "tier_ratio": [70, 30],
+  "dynamic": {
+    "stop_loss": -7.0,
+    "trailing_stop": "none",
+    "vol_stop": false,
+    "regime_filter": "none",
+    "dynamic_hold": false,
+    "partial_profit": false
+  },
+  "results": {
+    "annual_return": 117.7,
+    "sharpe": 1.88,
+    "max_dd": -27.3,
+    "final_value": 1027254,
+    "win_rate": 61,
+    "profit_factor": 1.80
+  }
+}
