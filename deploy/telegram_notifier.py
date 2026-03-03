@@ -40,10 +40,13 @@ def send_telegram(message: str, parse_mode: str = "HTML") -> bool:
         print("[Telegram] Bot token or chat_id not configured!")
         return False
 
+    # Tag all messages with project name
+    tagged = f"[Stock Learning]\n{message}"
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
         "chat_id": chat_id,
-        "text": message,
+        "text": tagged,
         "parse_mode": parse_mode,
         "disable_web_page_preview": True,
     }

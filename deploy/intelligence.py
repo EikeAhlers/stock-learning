@@ -63,10 +63,12 @@ def send_telegram(msg, cfg=None):
     if not token or not chat_id:
         return False
     try:
+        # Tag all messages with project name
+        tagged = f"[Stock Learning]\n{msg}"
         url = f"https://api.telegram.org/bot{token}/sendMessage"
         r = requests.post(url, json={
             "chat_id": chat_id,
-            "text": msg,
+            "text": tagged,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
         }, timeout=10)
