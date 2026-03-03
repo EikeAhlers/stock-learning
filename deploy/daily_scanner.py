@@ -869,6 +869,9 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
                 for b in result["bought"]:
                     log(f"  Alpaca bought {b['ticker']}: {b['qty']} shares @ ${b['price']:.2f}")
             
+            # Ensure all positions have stop-loss orders on Alpaca
+            alpaca.ensure_stop_losses()
+            
             # Add Alpaca summary to message
             alpaca_summary = alpaca.get_summary()
             if alpaca_summary:

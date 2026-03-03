@@ -176,6 +176,75 @@ class AlpacaTrader:
         """Get orders filtered by status."""
         return self._get(f"/v2/orders?status={status}&limit=50")
 
+    # ── Stop-Loss Orders ─────────────────────────────────────────
+
+    def place_stop_loss(self, ticker, qty, stop_price):
+        """Place a stop-loss sell order on Alpaca.
+        
+        This makes Alpaca monitor the price 24/7 and sell automatically
+        when the price drops to stop_price. No Le Potato needed.
+        """
+        order = {
+            "symbol": ticker,
+            "side": "sell",
+            "type": "stop",
+            "stop_price": str(round(stop_price, 2)),
+            "qty": str(int(qty)),
+            "time_in_force": "gtc",  # Good-til-cancelled
+        }
+        log(f"STOP-LOSS {ticker}: {qty} shares @ ${stop_price:.2f}")
+        result = self._post("/v2/orders", order)
+        log(f"  Stop order placed: {result['id']} status={result['status']}")
+        return result
+
+    def cancel_orders_for(self, ticker):
+        """Cancel all open orders for a ticker (e.g. before selling)."""
+        orders = self.get_orders(status="open")
+        cancelled = 0
+        for o in orders:
+            if o["symbol"] == ticker:
+                try:
+                    self._delete(f"/v2/orders/{o['id']}")
+                    cancelled += 1
+                except Exception:
+                    pass
+        if cancelled:
+            log(f"  Cancelled {cancelled} open orders for {ticker}")
+        return cancelled
+
+    def ensure_stop_losses(self):
+        """Check all open positions have stop-loss orders. Place any missing ones."""
+        cfg = load_config()
+        stop_pct = cfg["strategy"].get("stop_loss_pct", -7.0)
+        positions = self.get_positions()
+        open_orders = self.get_orders(status="open")
+
+        # Build set of tickers that already have stop orders
+        tickers_with_stops = set()
+        for o in open_orders:
+            if o["type"] == "stop" and o["side"] == "sell":
+                tickers_with_stops.add(o["symbol"])
+
+        placed = []
+        for pos in positions:
+            tk = pos["symbol"]
+            if tk in tickers_with_stops:
+                continue
+            entry = float(pos["avg_entry_price"])
+            qty = int(float(pos["qty"]))
+            stop_price = round(entry * (1 + stop_pct / 100), 2)
+            try:
+                self.place_stop_loss(tk, qty, stop_price)
+                placed.append({"ticker": tk, "stop_price": stop_price})
+            except Exception as e:
+                log(f"  Failed to place stop for {tk}: {e}")
+
+        if placed:
+            log(f"Placed {len(placed)} missing stop-loss orders")
+        else:
+            log("All positions have stop-loss orders")
+        return placed
+
     # ── High-level trading logic ─────────────────────────────────
 
     def execute_picks(self, picks, max_positions=3):
@@ -259,6 +328,14 @@ class AlpacaTrader:
                 self.buy_market(tk, qty=qty)
                 cash -= qty * price
                 results["bought"].append({"ticker": tk, "qty": qty, "price": price})
+                # Place stop-loss order immediately
+                stop_pct = cfg["strategy"].get("stop_loss_pct", -7.0)
+                stop_price = round(price * (1 + stop_pct / 100), 2)
+                time.sleep(2)  # Wait for buy to fill
+                try:
+                    self.place_stop_loss(tk, qty, stop_price)
+                except Exception as se:
+                    log(f"  WARNING: Buy OK but stop-loss failed for {tk}: {se}")
             except Exception as e:
                 log(f"  FAILED to buy {tk}: {e}")
 
@@ -315,6 +392,7 @@ class AlpacaTrader:
             if pnl_pct <= stop_loss:
                 log(f"STOP LOSS {tk}: {pnl_pct:+.1f}% (limit: {stop_loss}%)")
                 try:
+                    self.cancel_orders_for(tk)  # Cancel stop order before closing
                     self.close_position(tk)
                     sold.append({"ticker": tk, "reason": "stop_loss", "pnl": pnl_pct})
                     holds.pop(tk, None)
@@ -326,6 +404,7 @@ class AlpacaTrader:
             if trading_days >= hold_days:
                 log(f"HOLD EXPIRY {tk}: {trading_days}d held, P&L={pnl_pct:+.1f}%")
                 try:
+                    self.cancel_orders_for(tk)  # Cancel stop order before closing
                     self.close_position(tk)
                     sold.append({"ticker": tk, "reason": "hold_expiry", "pnl": pnl_pct})
                     holds.pop(tk, None)
