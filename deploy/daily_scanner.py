@@ -794,20 +794,33 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
     portfolio = load_portfolio()
     max_pos = strat.get("max_positions", 3)
     open_slots = max_pos - len(portfolio["positions"])
+    sizing_method = strat.get("sizing_method", "equal")
     
     if open_slots > 0 and len(picks_list) > 0:
+        # Calculate total equity for sizing
+        total_val = portfolio["cash"] + sum(
+            p.get("current_value", p["shares"] * p["entry_price"])
+            for p in portfolio["positions"]
+        )
+        slot_size = total_val / max_pos
+        
+        # Tiered: #1 pick gets 60%, #2 gets 40% of their slots
+        tiers = [0.60, 0.40] if sizing_method == "tiered" else [0.50, 0.50]
+        eligible = []
         for pick in picks_list[:open_slots]:
             tk = pick["ticker"]
-            # Skip if already held
-            if tk in [p["ticker"] for p in portfolio["positions"]]:
-                continue
-            
-            # Position sizing — match backtest: total_eq / max_positions
-            total_val = portfolio["cash"] + sum(
-                p.get("current_value", p["shares"] * p["entry_price"])
-                for p in portfolio["positions"]
-            )
-            pos_val = min(portfolio["cash"], total_val / max_pos)
+            if tk not in [p["ticker"] for p in portfolio["positions"]]:
+                eligible.append(pick)
+        
+        n_buy = len(eligible)
+        if n_buy > 0:
+            tier_weights = tiers[:n_buy]
+            scale = n_buy / sum(tier_weights) if sum(tier_weights) > 0 else 1
+        
+        for i, pick in enumerate(eligible):
+            tk = pick["ticker"]
+            tier = tiers[i] if i < len(tiers) else 0.40
+            pos_val = min(portfolio["cash"], slot_size * tier * scale)
             shares = int(pos_val / (pick["close"] * 1.0015))
             
             if shares > 0 and portfolio["cash"] > shares * pick["close"] * 1.0015:

@@ -234,14 +234,21 @@ class AlpacaTrader:
             log("No new buys needed")
             return results
 
-        # Position sizing: match backtest — equal weight across max_positions
-        # total_eq / max_positions, capped by available cash
-        pos_size = equity / max_positions
-        log(f"Position sizing: ${pos_size:,.0f}/pick ({max_positions} slots)")
+        # Position sizing: tiered (60/40) or equal weight
+        cfg = load_config()
+        sizing = cfg["strategy"].get("sizing_method", "equal")
+        tiers = [0.60, 0.40] if sizing == "tiered" else [0.50, 0.50]
+        slot_size = equity / max_positions
+        n_buy = len(buys)
+        tier_weights = tiers[:n_buy]
+        scale = n_buy / sum(tier_weights) if sum(tier_weights) > 0 else 1
+        log(f"Position sizing: {sizing}, ${slot_size:,.0f}/slot ({max_positions} slots)")
 
-        for pick in buys:
+        for i, pick in enumerate(buys):
             tk = pick["ticker"]
             price = pick["close"]
+            tier = tiers[i] if i < len(tiers) else 0.40
+            pos_size = slot_size * tier * scale
             qty = int(pos_size / (price * 1.001))  # slight buffer for slippage
 
             if qty <= 0 or cash < qty * price:

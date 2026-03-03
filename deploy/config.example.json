@@ -9,6 +9,7 @@
         "stop_loss_pct": -7.0,
         "top_n": 2,
         "max_positions": 2,
+        "sizing_method": "tiered",
         "min_prob": 0.50,
         "max_prob": 0.85,
         "cost_bps": 10,
