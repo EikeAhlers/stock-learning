@@ -842,13 +842,58 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
     elapsed = time.time() - start
     log(f"Scan complete in {elapsed:.0f}s")
     
-    # Reload portfolio for accurate state
-    portfolio = load_portfolio()
+    # Build Telegram message using Alpaca positions (not paper portfolio)
     hold_days = strat.get("hold_days", 5)
+    
+    # Try to get Alpaca positions for the message
+    alpaca_portfolio = None
+    try:
+        from alpaca_trader import AlpacaTrader as _AT
+        _at = _AT()
+        if _at.enabled:
+            _acct = _at.get_account()
+            _positions = _at.get_positions()
+            _holds_path = os.path.join(DATA_DIR, "alpaca_holds.json")
+            _holds = {}
+            if os.path.exists(_holds_path):
+                with open(_holds_path) as _hf:
+                    _holds = json.load(_hf)
+            
+            alpaca_portfolio = {
+                "cash": float(_acct["cash"]),
+                "start_capital": 100000,
+                "positions": [],
+                "trades": [],
+            }
+            for _p in _positions:
+                _tk = _p["symbol"]
+                _entry_date = _holds.get(_tk, {}).get("entry_date", "")
+                _days = 0
+                if _entry_date:
+                    _ed = datetime.strptime(_entry_date, "%Y-%m-%d")
+                    _d = _ed
+                    while _d < datetime.now():
+                        _d += timedelta(days=1)
+                        if _d.weekday() < 5:
+                            _days += 1
+                alpaca_portfolio["positions"].append({
+                    "ticker": _tk,
+                    "unrealized_pnl": float(_p["unrealized_plpc"]) * 100,
+                    "days_held": _days,
+                    "current_value": float(_p["market_value"]),
+                })
+    except Exception:
+        pass
+    
+    # Use Alpaca portfolio if available, else fall back to paper
+    if alpaca_portfolio is not None:
+        portfolio_for_msg = alpaca_portfolio
+    else:
+        portfolio_for_msg = load_portfolio()
     
     msg = format_daily_picks(
         picks_list, today_str, model_info,
-        portfolio=portfolio, hold_days=hold_days,
+        portfolio=portfolio_for_msg, hold_days=hold_days,
     )
     
     # ── Step 10: Alpaca paper trading ─────────────────────────────────
@@ -880,7 +925,9 @@ def run_scan(force_retrain=False, manual=False, force_run=False):
             # Buy new picks (skip on crash days)
             if picks_list and not skip_buying:
                 result = alpaca.execute_picks(picks_list, max_pos)
-                alpaca.record_buys(picks_list)
+                # Only record picks that were actually bought
+                if result["bought"]:
+                    alpaca.record_buys(result["bought"])
                 for b in result["bought"]:
                     log(f"  Alpaca bought {b['ticker']}: {b['qty']} shares @ ${b['price']:.2f}")
             

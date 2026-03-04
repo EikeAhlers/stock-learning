@@ -320,9 +320,13 @@ class AlpacaTrader:
             pos_size = slot_size * tier * scale
             qty = int(pos_size / (price * 1.001))  # slight buffer for slippage
 
+            # If insufficient cash for tiered size, try using all available cash
             if qty <= 0 or cash < qty * price:
-                log(f"  Skip {tk} — insufficient cash (need ${qty*price:,.0f}, have ${cash:,.0f})")
-                continue
+                qty = int(cash * 0.99 / price)  # use 99% of available cash
+                if qty <= 0:
+                    log(f"  Skip {tk} — insufficient cash (have ${cash:,.0f}, need at least ${price:.0f})")
+                    continue
+                log(f"  Adjusted {tk} qty to {qty} (using available cash ${cash:,.0f})")
 
             try:
                 self.buy_market(tk, qty=qty)

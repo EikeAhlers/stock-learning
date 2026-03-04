@@ -43,12 +43,8 @@ def load_config():
 def log(msg):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"[INTEL {ts}] {msg}"
+    # Only print to stdout — cron redirects to intelligence.log
     print(line, flush=True)
-    try:
-        with open(INTEL_LOG, "a") as f:
-            f.write(line + "\n")
-    except Exception:
-        pass
 
 
 def send_telegram(msg, cfg=None):
@@ -350,12 +346,13 @@ def evening_prescan():
 
     # Import scanner functions
     try:
+        sys.path.insert(0, SCRIPT_DIR)
         from daily_scanner import (
-            download_universe, download_prices, add_features,
-            load_or_train_model, score_stocks
+            get_sp500_tickers, download_fresh_data, add_features,
+            load_model
         )
-    except ImportError:
-        log("Could not import scanner functions — skipping evening scan")
+    except ImportError as e:
+        log(f"Could not import scanner functions: {e}")
         return
 
     import numpy as np
@@ -369,8 +366,8 @@ def evening_prescan():
     try:
         # Download fresh data
         log("Downloading prices...")
-        tickers = download_universe()
-        prices = download_prices(tickers)
+        tickers = get_sp500_tickers()
+        prices = download_fresh_data(tickers)
         log(f"Downloaded {len(prices)} stock-days")
 
         # Engineer features
@@ -379,13 +376,10 @@ def evening_prescan():
         log(f"Features ready: {len(df)} rows")
 
         # Load existing model (don't retrain, just score)
-        model_path = os.path.join(SCRIPT_DIR, "models", "model_latest.pkl")
-        if not os.path.exists(model_path):
+        model_data = load_model()
+        if model_data is None:
             log("No model found — skipping evening scan")
             return
-
-        with open(model_path, "rb") as f:
-            model_data = pickle.load(f)
 
         model = model_data["model"]
         feature_cols = model_data.get("feature_cols", [])
