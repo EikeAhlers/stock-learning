@@ -370,10 +370,10 @@ def evening_prescan():
         prices = download_fresh_data(tickers)
         log(f"Downloaded {len(prices)} stock-days")
 
-        # Engineer features
+        # Engineer features (returns tuple: DataFrame, feature_list)
         log("Engineering features...")
-        df = add_features(prices)
-        log(f"Features ready: {len(df)} rows")
+        df, feature_list = add_features(prices)
+        log(f"Features ready: {len(df)} rows, {len(feature_list)} features")
 
         # Load existing model (don't retrain, just score)
         model_data = load_model()
@@ -382,18 +382,46 @@ def evening_prescan():
             return
 
         model = model_data["model"]
-        feature_cols = model_data.get("feature_cols", [])
+        scaler = model_data.get("scaler")
+        feature_cols = model_data.get("features", [])
+
+        if not feature_cols:
+            log("No feature columns in model — skipping")
+            return
 
         # Score today's stocks
-        latest = df.groupby("ticker").tail(1).copy()
-        X = latest[feature_cols].fillna(0)
-        latest["prob"] = model.predict_proba(X)[:, 1]
+        latest = df.groupby("Ticker").tail(1).copy()
+
+        # Only keep rows that have all required features
+        available = [c for c in feature_cols if c in latest.columns]
+        if len(available) < len(feature_cols) * 0.8:
+            log(f"Only {len(available)}/{len(feature_cols)} features available — skipping")
+            return
+
+        scoreable = latest.dropna(subset=available, how="all")
+        X = scoreable[available].fillna(0).values
+
+        # Apply scaler if available (model was trained on scaled features)
+        if scaler is not None:
+            try:
+                X = scaler.transform(X)
+            except Exception as e:
+                log(f"Scaler transform failed ({e}), using raw features")
+
+        scoreable = scoreable.copy()
+        scoreable["prob"] = model.predict_proba(X)[:, 1]
+
+        # Get momentum from Prev_Return_20d
+        if "Prev_Return_20d" in scoreable.columns:
+            scoreable["momentum_20d"] = scoreable["Prev_Return_20d"]
+        else:
+            scoreable["momentum_20d"] = 0
 
         # Apply filters
-        filtered = latest[
-            (latest["prob"] >= min_prob) &
-            (latest["prob"] <= max_prob) &
-            (latest.get("momentum_20d", 0) > 0)
+        filtered = scoreable[
+            (scoreable["prob"] >= min_prob) &
+            (scoreable["prob"] <= max_prob) &
+            (scoreable["momentum_20d"] > 0)
         ].copy()
         filtered = filtered.sort_values("prob", ascending=False)
 
@@ -401,9 +429,9 @@ def evening_prescan():
         watchlist = []
         for _, row in top.iterrows():
             watchlist.append({
-                "ticker": row["ticker"],
+                "ticker": row["Ticker"],
                 "prob": round(float(row["prob"]), 3),
-                "close": round(float(row["close"]), 2),
+                "close": round(float(row["Close"]), 2),
                 "momentum": round(float(row.get("momentum_20d", 0)), 1),
             })
 

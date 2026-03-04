@@ -331,11 +331,22 @@ class AlpacaTrader:
             try:
                 self.buy_market(tk, qty=qty)
                 cash -= qty * price
-                results["bought"].append({"ticker": tk, "qty": qty, "price": price})
-                # Place stop-loss order immediately
+                results["bought"].append({"ticker": tk, "qty": qty, "price": price, "close": price})
+                # Place stop-loss order using actual fill price
                 stop_pct = cfg["strategy"].get("stop_loss_pct", -7.0)
-                stop_price = round(price * (1 + stop_pct / 100), 2)
-                time.sleep(2)  # Wait for buy to fill
+                time.sleep(3)  # Wait for buy to fill
+                # Get actual fill price from Alpaca position
+                try:
+                    pos = self.get_position(tk)
+                    if pos:
+                        actual_price = float(pos["avg_entry_price"])
+                        log(f"  {tk} filled at ${actual_price:.2f} (scan price was ${price:.2f})")
+                    else:
+                        actual_price = price  # fallback to scan price
+                        log(f"  {tk} position not found yet, using scan price ${price:.2f}")
+                except Exception:
+                    actual_price = price
+                stop_price = round(actual_price * (1 + stop_pct / 100), 2)
                 try:
                     self.place_stop_loss(tk, qty, stop_price)
                 except Exception as se:
@@ -437,9 +448,11 @@ class AlpacaTrader:
         for pick in picks:
             tk = pick["ticker"]
             if tk not in holds:
+                # Support both "close" (from picks_list) and "price" (from bought results)
+                entry_price = pick.get("close", pick.get("price", 0))
                 holds[tk] = {
                     "entry_date": today_str,
-                    "entry_price": pick["close"],
+                    "entry_price": entry_price,
                 }
 
         os.makedirs(os.path.dirname(hold_tracker_path), exist_ok=True)
